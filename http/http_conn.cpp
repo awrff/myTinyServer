@@ -13,6 +13,43 @@ const char *error_500_form = "There was an unusual problem serving the request f
 
 const char* doc_root = "/home/var/html"; // 根目录
 
+// 操作数据库
+map<string, string> users;
+locker m_lock;
+
+// 从数据库中取出用户信息并存入map中
+void http_conn::init_mysql_result(connection_pool* conn){
+    //抽取一个连接
+    MYSQL* mysql = NULL;
+    connectionRAII mysqlcon(&mysql, conn);
+
+    // 在user中检索用户名和密码
+    if(mysql_query(mysql, "SELECT username, passwd FROM user")){
+        //输出日志
+        printf("SELECT error");
+    }
+
+    // 检索完整结果
+    MYSQL_RES* result = mysql_store_result(mysql);
+
+    /* 这两行暂时应该可以不用
+    
+    //返回结果集中的列数
+    int num_fields = mysql_num_fields(result);
+
+    //返回所有字段结构的数组
+    MYSQL_FIELD *fields = mysql_fetch_fields(result);
+     
+    */
+
+    // 存入map
+    while(MYSQL_ROW row = mysql_fetch_row(result)){
+        string temp1(row[0]);
+        string temp2(row[1]);
+        users[temp1] = temp2;
+    }
+}
+
 int setnonblocking(int fd){
     int old_option = fcntl(fd, F_GETFL); // 获取文件状态标记
     int new_option = old_option | O_NONBLOCK;
@@ -61,6 +98,7 @@ void http_conn::init(int sockfd, const sockaddr_in& addr){
 
 void http_conn::init()
 {
+    mysql = NULL;
     m_check_state = CHECK_STATE_REQUESTLINE;
     m_linger = false;
     m_method = GET;
@@ -72,6 +110,7 @@ void http_conn::init()
     m_checked_idx = 0;
     m_read_idx = 0;
     m_write_idx = 0;
+    cgi = 0; // POST使用
     memset(m_read_buf, '\0', READ_BUFFER_SIZE);
     memset(m_write_buf, '\0', WRITE_BUFFER_SIZE);
     memset(m_real_file, '\0', FILENAME_LEN);
@@ -152,6 +191,10 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char* text){
     if(strcasecmp(method, "GET") == 0){
         m_method = GET;
     }
+    else if(strcasecmp(method, "POST") == 0){
+        m_method = POST;
+        cgi = 1;
+    }
     else{
         return BAD_REQUEST; // 只实现了GET方法
     }
@@ -231,9 +274,11 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
 //判断http请求是否被完整读入, 没有真正解析
 http_conn::HTTP_CODE http_conn::parse_content(char *text)
 {
+    // 如果是POST会包含有用户名和密码信息
     if (m_read_idx >= (m_content_length + m_checked_idx))
     {
         text[m_content_length] = '\0';
+        m_string = text; // 将用户密码保存到m_string
         return GET_REQUEST;
     }
     return NO_REQUEST;
@@ -293,9 +338,81 @@ http_conn::HTTP_CODE http_conn::process_read(){
 http_conn::HTTP_CODE http_conn::do_request(){
     strcpy(m_real_file, doc_root);
     int len = strlen(doc_root);
-    strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+    const char *p = strrchr(m_url, '/');
 
-    printf("debug filename: %s\n", m_real_file);
+    //处理cgi
+    if (cgi == 1 && (*(p + 1) == '2' || *(p + 1) == '3'))
+    {
+
+        //根据标志判断是登录检测还是注册检测
+        char flag = m_url[1];
+
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/");
+        strcat(m_url_real, m_url + 2);
+        strncpy(m_real_file + len, m_url_real, FILENAME_LEN - len - 1);
+        free(m_url_real);
+
+        //将用户名和密码提取出来
+        //user=123&passwd=123
+        char name[100], password[100];
+        int i;
+        for (i = 5; m_string[i] != '&'; ++i)
+            name[i - 5] = m_string[i];
+        name[i - 5] = '\0';
+
+        int j = 0;
+        for (i = i + 10; m_string[i] != '\0'; ++i, ++j)
+            password[j] = m_string[i];
+        password[j] = '\0';
+
+        //同步线程登录校验
+        if (*(p + 1) == '3')
+        {
+            //如果是注册，先检测数据库中是否有重名的
+            //没有重名的，进行增加数据
+            char *sql_insert = (char *)malloc(sizeof(char) * 200);
+            strcpy(sql_insert, "INSERT INTO user(username, passwd) VALUES(");
+            strcat(sql_insert, "'");
+            strcat(sql_insert, name);
+            strcat(sql_insert, "', '");
+            strcat(sql_insert, password);
+            strcat(sql_insert, "')");
+
+            printf("debug 1\n");
+
+            if (users.find(name) == users.end())
+            {
+                
+                printf("debug 2\n");
+                printf("sql: %s\n", sql_insert);
+                m_lock.lock();
+                /* 这里的mysql,即http_conn的MYSQL* 是在threadpool的run函数里面就初始化过的 */
+                int res = mysql_query(mysql, sql_insert);
+                users.insert(pair<string, string>(name, password));
+                m_lock.unlock();
+
+                printf("debug 3\n");
+                if (!res)
+                    strcpy(m_url, "/log.html");
+                else
+                    strcpy(m_url, "/registerError.html");
+            }
+            else
+                strcpy(m_url, "/registerError.html");
+        }
+        //如果是登录，直接判断
+        //若浏览器端输入的用户名和密码在表中可以查找到，返回1，否则返回0
+        else if (*(p + 1) == '2')
+        {
+            if (users.find(name) != users.end() && users[name] == password)
+                strcpy(m_url, "/welcome.html");
+            else
+                strcpy(m_url, "/logError.html");
+        }
+    }
+
+    strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
 
     if(stat(m_real_file, &m_file_stat) < 0){
         return NO_RESOURCE;

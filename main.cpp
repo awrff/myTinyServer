@@ -9,8 +9,10 @@
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include "threadpool/threadpool.h"
+#include "threadpool/threadpool_wosql.h"
 #include "chat/chat.h"
 #include "http/http_conn.h"
+#include "mysql/sql_conn_pool.h"
 
 #define CHAT_PORT 10992
 #define HTTP_PORT 10993
@@ -34,10 +36,6 @@ void addsig(int sig, void(handler)(int), bool restart=true){
     assert(sigaction(sig, &sa, NULL) != -1);
 }
 
-int clnt_socks[MAX_CLNT_NUM];
-int clnt_cnt = 0;
-threadpool<chat> pool;
-
 int main(int argc, char* argv[]){
     int serv_sock, clnt_sock;
     struct sockaddr_in serv_addr;
@@ -48,14 +46,31 @@ int main(int argc, char* argv[]){
         处理方式是终止程序，这对服务器程序来说是不可取的 */
     addsig(SIGPIPE, SIG_IGN);
 
-    http_conn http_clnts[MAX_CLNT_NUM];
-    threadpool<http_conn>* http_pool;
+    // 创建数据库连接池
+    connection_pool* connPool = connection_pool::GetInstance();
+    connPool->init("localhost", "root", "", "yourdb", 3306, 8);
+
+    // 创建线程池
+    
+    threadpool_wosql<chat>* chat_pool;
     try{
-        http_pool = new threadpool<http_conn>;
+        chat_pool = new threadpool_wosql<chat>();
     }
     catch(...){
         return 1;
     }
+
+    threadpool<http_conn>* http_pool;
+    try{
+        http_pool = new threadpool<http_conn>(connPool);
+    }
+    catch(...){
+        return 1;
+    }
+    
+    // 读取用户表
+    http_conn* http_clnts = new http_conn[MAX_CLNT_NUM];
+    http_clnts->init_mysql_result(connPool);
 
     if(argc != 2){
         printf(" Usage : %s <port> \n", argv[0]);
@@ -116,8 +131,8 @@ int main(int argc, char* argv[]){
                 }
                 if(ntohs(serv_addr.sin_port) == CHAT_PORT){
                     printf("<chat> new client connected, ip address: %s\n", inet_ntoa(clnt_addr.sin_addr));
-                    chat chat_clnt(clnt_sock, &clnt_cnt, clnt_socks);
-                    pool.append(&chat_clnt);
+                    chat* chat_clnt = new chat(clnt_sock);
+                    chat_pool->append(chat_clnt);
                 }
                 else if(ntohs(serv_addr.sin_port) == HTTP_PORT){
                     printf("<html> new client connected, ip address: %s\n", inet_ntoa(clnt_addr.sin_addr));

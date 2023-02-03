@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <map>
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -15,11 +16,12 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <fcntl.h>
-#include "../locker/locker.h"
 #include <signal.h>
 #include <sys/types.h>
 #include <sys/epoll.h>
 #include <sys/uio.h>
+#include "../locker/locker.h"
+#include "../mysql/sql_conn_pool.h"
 
 class http_conn{
     public:
@@ -41,6 +43,8 @@ public:
     void process(); // 处理客户请求
     bool read(); // 非阻塞读
     bool write(); // 非阻塞写
+
+    void init_mysql_result(connection_pool * conn);
 
 private:
     void init(); // 初始化连接
@@ -71,6 +75,7 @@ public:
     static int m_epollfd;
     // 统计用户的数量
     static int m_user_count;
+    MYSQL* mysql;
 
 private:
     int m_sockfd;
@@ -94,6 +99,7 @@ private:
     struct iovec m_iv[2];
     int m_iv_count;
     char *m_string; //存储请求头数据
+    int cgi; // 是否使用POST
 };   
 
 #endif

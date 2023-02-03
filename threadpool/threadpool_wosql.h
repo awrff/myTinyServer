@@ -1,19 +1,17 @@
-#ifndef __THREADPOOL__
-#define __THREADPOOL__
+#ifndef __THREADPOOL_WOSQL__
+#define __THREADPOOL_WOSQL__
 
 #include <list>
 #include <cstdio>
 #include <exception>
 #include <pthread.h>
 #include "../locker/locker.h"
-#include "../mysql/sql_conn_pool.h"
-
 
 template <typename T>
-class threadpool{
+class threadpool_wosql{
     public:
-        threadpool(connection_pool *connPool, int thread_number = 8, int max_requests = 10000);
-        ~threadpool();
+        threadpool_wosql(int thread_number = 8, int max_requests = 10000);
+        ~threadpool_wosql();
         bool append(T* request);
     
     private:
@@ -34,8 +32,8 @@ class threadpool{
 };
 
 template <typename T>
-threadpool<T>::threadpool(connection_pool *connPool, int thread_number, int max_requests):
-    m_connPool(connPool), m_thread_number(thread_number), m_max_requests(max_requests), m_stop(false), m_threads(NULL){
+threadpool_wosql<T>::threadpool_wosql(int thread_number, int max_requests):
+    m_thread_number(thread_number), m_max_requests(max_requests), m_stop(false), m_threads(NULL){
 
     if((m_thread_number <= 0) || (m_max_requests <= 0)){
         throw std::exception();
@@ -64,13 +62,13 @@ threadpool<T>::threadpool(connection_pool *connPool, int thread_number, int max_
 }
 
 template <typename T>
-threadpool<T>::~threadpool(){
+threadpool_wosql<T>::~threadpool_wosql(){
     delete[] m_threads;
     m_stop = true;
 }
 
 template <typename T>
-bool threadpool<T>::append(T *request)
+bool threadpool_wosql<T>::append(T *request)
 {
     m_queuelocker.lock();
     if (m_workqueue.size() > m_max_requests)
@@ -85,14 +83,14 @@ bool threadpool<T>::append(T *request)
 }
 
 template <typename T>
-void* threadpool<T>::worker(void* arg){
-    threadpool* pool = (threadpool* ) arg;
+void* threadpool_wosql<T>::worker(void* arg){
+    threadpool_wosql* pool = (threadpool_wosql* ) arg;
     pool->run();
     return pool;
 }
 
 template <typename T>
-void threadpool<T>::run(){
+void threadpool_wosql<T>::run(){
     while(!m_stop){
         m_queuestat.wait();
         m_queuelocker.lock();
@@ -107,7 +105,6 @@ void threadpool<T>::run(){
             continue;
         }
         // 初始化sql连接, connectionRAII管理的数据库连接在mysqlcon这个变量结束时自动销毁, 因此不用手动释放连接
-        connectionRAII mysqlcon(&request->mysql, m_connPool);
         request->process();
     }
 }
