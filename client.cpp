@@ -41,13 +41,15 @@ int main(int argc, char* argv[])
     if(connect(sock, (struct sockaddr*) &serv_adr, sizeof(serv_adr)) == -1){
         error_handling("connect() error");
     }
+    write(sock, argv[3], strlen(argv[3]));
 
     pthread_create(&snd_thread, NULL, send_msg, (void*)& sock);
     pthread_create(&rcv_thread, NULL, recv_msg, (void*)& sock);
     
     // pthread_join是阻塞式的，相比pthread_detach不用考虑主线程提前结束的问题，并且可以得到线程的返回值
-    pthread_join(snd_thread, &thread_return);
+    pthread_detach(snd_thread);
     pthread_join(rcv_thread, &thread_return);
+
     close(sock);
     return 0;
 }
@@ -71,8 +73,10 @@ void* recv_msg(void* arg){
     int str_len;
     while(1){
         str_len = read(sock, name_msg, NAME_SIZE+BUF_SIZE-1);
-        if(str_len == -1)
+        if(str_len == 0){
+            close(sock);
             return (void*)-1;
+        }  
         name_msg[str_len] = 0;
         fputs(name_msg, stdout);
     }

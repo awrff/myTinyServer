@@ -544,7 +544,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     {
     case INTERNAL_ERROR:
     {
-        printf("case INTERNAL_ERROR\n");
+        printf("type: INTERNAL_ERROR\n");
         add_status_line(500, error_500_title);
         add_headers(strlen(error_500_form));
         if (!add_content(error_500_form))
@@ -553,7 +553,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     }
     case BAD_REQUEST:
     {
-        printf("case BAD_REQUEST\n");
+        printf("type: BAD_REQUEST\n");
         add_status_line(404, error_404_title);
         add_headers(strlen(error_404_form));
         if (!add_content(error_404_form))
@@ -562,7 +562,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     }
     case FORBIDDEN_REQUEST:
     {
-        printf("case FORBIDDEN_REQUEST\n");
+        printf("type: FORBIDDEN_REQUEST\n");
         add_status_line(403, error_403_title);
         add_headers(strlen(error_403_form));
         if (!add_content(error_403_form))
@@ -571,7 +571,7 @@ bool http_conn::process_write(HTTP_CODE ret)
     }
     case FILE_REQUEST:
     {
-        printf("case FILE_REQUEST\n");
+        printf("type: FILE_REQUEST\n");
         add_status_line(200, ok_200_title);
         if (m_file_stat.st_size != 0)
         {
@@ -592,7 +592,7 @@ bool http_conn::process_write(HTTP_CODE ret)
         }
     }
     default:
-        printf("case ERROR\n");
+        printf("type: ERROR\n");
         return false;
     }
     m_iv[0].iov_base = m_write_buf;
@@ -612,10 +612,6 @@ void http_conn::process()
         return;
     }
     bool write_ret = process_write(read_ret);
-    if(write_ret)
-        printf("write ret: success\n");
-    else
-        printf("write ret: fail\n");
     if (!write_ret)
     {
         close_conn();

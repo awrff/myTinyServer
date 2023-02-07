@@ -3,60 +3,66 @@
 
 #define MAX_CLNT_NUM 100
 #define BUFF_SIZE 500
+#define TIME_SLOT 5
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
-
+#include "../timer/lst_timer.h"
 
 class chat{
     private:
         int clnt_sock;
         char buf[BUFF_SIZE];
-        static int clnt_cnt;
-        static int* clnt_socks;
-        static pthread_mutex_t mutx;
+        chat_client_data* clnt_data;
+
+        int *clnt_cnt;
+        int *clnt_socks;
+        pthread_mutex_t* mutx;
+
+        chat_util_timer* timer;
+        chat_sort_timer_lst* timer_list;
     public:
-        chat(int sock): clnt_sock(sock) {
-            pthread_mutex_lock(&mutx);
-            clnt_socks[clnt_cnt++] = sock;
-            pthread_mutex_unlock(&mutx);
-        }
+        chat(int sock, chat_client_data* clnt_data, int* cnt, int* clnt_socks, pthread_mutex_t* mutx, \
+            chat_util_timer* timer, chat_sort_timer_lst* timer_list): clnt_sock(sock), clnt_cnt(cnt), \
+            clnt_data(clnt_data), clnt_socks(clnt_socks), mutx(mutx), timer(timer), timer_list(timer_list)
+            {
+                pthread_mutex_lock(mutx);
+                clnt_socks[*clnt_cnt] = clnt_sock;
+                (*clnt_cnt) += 1;
+                pthread_mutex_unlock(mutx);
+            }
         void process(){
             int str_len;
             int name_len = 0;
-            char name[20];
             while( (str_len = read(clnt_sock, buf, sizeof(buf))) != 0){
-                pthread_mutex_lock(&mutx);
-                for(int i=0; i<clnt_cnt; i++){
+                // 发送消息给其他用户
+                pthread_mutex_lock(mutx);
+                for(int i=0; i<(*clnt_cnt); i++){
                     write(clnt_socks[i], buf, str_len);
                 }
+                pthread_mutex_unlock(mutx);
+
+                // 服务器端打印消息
                 buf[str_len] = 0;
                 printf("%s", buf);
-                
-                name_len = strchr(buf, ']')-buf;
-                strncpy(name, buf+1, name_len);
-                name[name_len-1] = 0;
 
-                pthread_mutex_unlock(&mutx);       
+                // 更新计时器
+                time_t cur = time(NULL);
+                timer->expire = cur + 3 * TIME_SLOT;
+                timer_list->adjust_timer(timer);
             }
-            pthread_mutex_lock(&mutx);
-            clnt_cnt--;
-            for(int i=0; i<clnt_cnt; i++){
-                if(clnt_socks[i] == clnt_sock){
-                    for(int j=i; j<clnt_cnt; j++)
-                        clnt_socks[j] = clnt_socks[j+1];
-                    break;
+            // 这里可能有两种情况, 一是服务器定时器触发客户端发送EOF, 定时器已经执行过一遍cb_func
+            // 二是客户端主动发送EOF，定时器还未超时
+            time_t cur = time(NULL);
+            if(cur < timer->expire){
+                timer->cb_func(clnt_data);
+                if(timer){
+                    timer_list->del_timer(timer);
                 }
             }
-            pthread_mutex_unlock(&mutx);
-            if(name_len != 0) printf("client %s left.\n", name);
-            else printf("client left\n");
             close(clnt_sock);
         }
 };
-pthread_mutex_t chat::mutx= PTHREAD_MUTEX_INITIALIZER;
-int chat::clnt_cnt = 0;
-int* chat::clnt_socks = new int[MAX_CLNT_NUM];
 #endif
