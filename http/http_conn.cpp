@@ -1,4 +1,6 @@
 #include "http_conn.h"
+#include "../log/log.h"
+
 
 // 定义状态信息
 const char *ok_200_title = "OK";
@@ -26,7 +28,7 @@ void http_conn::init_mysql_result(connection_pool* conn){
     // 在user中检索用户名和密码
     if(mysql_query(mysql, "SELECT username, passwd FROM user")){
         //输出日志
-        printf("SELECT error");
+        LOG_ERROR("SELECT error:%s\n", mysql_error(mysql));
     }
 
     // 检索完整结果
@@ -266,7 +268,8 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
     }
     else
     {
-        //printf("oop!unknow header: %s\n",text);
+        LOG_INFO("oop!unknow header: %s", text);
+        Log::get_instance()->flush();
     }
     return NO_REQUEST;
 }
@@ -295,7 +298,8 @@ http_conn::HTTP_CODE http_conn::process_read(){
     {
         text = get_line();
         m_start_line = m_checked_idx;
-        printf("got 1 http line: %s\n", text);
+        LOG_INFO("%s", text);
+        Log::get_instance()->flush();
 
         switch(m_check_state){
             case CHECK_STATE_REQUESTLINE:
@@ -494,6 +498,8 @@ bool http_conn::add_response(const char *format, ...)
     }
     m_write_idx += len;
     va_end(arg_list);
+    LOG_INFO("request:%s", m_write_buf);
+    Log::get_instance()->flush();
     return true;
 }
 bool http_conn::add_status_line(int status, const char *title)

@@ -43,7 +43,10 @@ public:
     void process(); // 处理客户请求
     bool read(); // 非阻塞读
     bool write(); // 非阻塞写
-
+    sockaddr_in* get_address()
+    {
+        return &m_address;
+    }
     void init_mysql_result(connection_pool * conn);
 
 private:

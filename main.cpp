@@ -14,6 +14,7 @@
 #include "threadpool/threadpool_wosql.h"
 #include "http/http_conn.h"
 #include "mysql/sql_conn_pool.h"
+#include "log/log.h"
 
 #define CHAT_PORT 10992
 #define HTTP_PORT 10993
@@ -23,6 +24,9 @@
 #define MAX_EPOLL_SIZE 100
 #define MAX_CLNT_NUM 100
 #define BUFF_SIZE 500
+
+#define SYNLOG // 同步写日志
+//#define ASYNLOG //异步写日志
 
 extern int addfd(int epollfd, int fd, bool one_shot);
 extern int setnonblocking(int fd);
@@ -64,14 +68,28 @@ void timer_handler(){
 }
 
 // 删除不活动的连接
+// 日志记录
 void cb_func(client_data* user_data){
     epoll_ctl(epfd, EPOLL_CTL_DEL, user_data->sockfd, 0);
     assert(user_data);
     close(user_data->sockfd);
     http_conn::m_user_count--;
+
+    // 输出日志 INFO
+    LOG_INFO("close fd %d", user_data->sockfd);
+    Log::get_instance()->flush();
 }
 
 int main(int argc, char* argv[]){
+
+    #ifdef ASYNLOG
+        Log::get_instance()->init("ServerLog", 2000, 800000, 8);
+    #endif
+
+    #ifdef SYNLOG
+        Log::get_instance()->init("ServerLog", 2000, 800000, 0); // 文件名-文件大小-最大行数-最大阻塞队列长度(0表示同步模式)
+    #endif
+
     int serv_sock, clnt_sock;
     struct sockaddr_in serv_addr;
     socklen_t clnt_addr_sz;
@@ -162,7 +180,7 @@ int main(int argc, char* argv[]){
         /* EINTR:当阻塞于某个慢系统调用的一个进程捕获某个信号且相应信号处理函数返回时，该系统调用可能
         返回一个EINTR错误，这里指epoll_wait在阻塞时遇到了alarm触发的SIGALRM信号 */
         if(event_cnt == -1 && errno != EINTR){
-            puts("epoll_wait error");
+            LOG_ERROR("%s", "epoll failure");
             break;
         }
         
@@ -174,12 +192,13 @@ int main(int argc, char* argv[]){
                 clnt_addr_sz = sizeof(clnt_addr);
                 clnt_sock = accept(serv_sock, (struct sockaddr*) &clnt_addr, &clnt_addr_sz);
                 if(clnt_sock < 0){
-                    printf("accept error");
+                    LOG_ERROR("%s:errno is:%d", "accept error", errno);
                     continue;
                 }
                 printf("<html> new client connected, ip address: %s\n", inet_ntoa(clnt_addr.sin_addr));
                 if(http_conn::m_user_count >= MAX_CLNT_NUM){
                     show_error(sockfd, "interal server busy");
+                    LOG_ERROR("%s", "Internal server busy");
                     continue;
                 }
                 http_clnts[clnt_sock].init(clnt_sock, clnt_addr);
@@ -239,6 +258,8 @@ int main(int argc, char* argv[]){
                 printf("EPOLLIN EVENT\n");
                 util_timer* timer = users_timer[sockfd].timer;
                 if(http_clnts[sockfd].read()){
+                    LOG_INFO("deal with the client(%s)", inet_ntoa(http_clnts[sockfd].get_address()->sin_addr));
+                    Log::get_instance()->flush();
                     // 如果是读入数据，定时器要刷新
                     http_pool->append(http_clnts+sockfd);
                     if(timer){
@@ -260,6 +281,9 @@ int main(int argc, char* argv[]){
                 util_timer *timer = users_timer[sockfd].timer;
                 printf("EPOLLOUT EVENT\n");
                 if(!http_clnts[sockfd].write()){
+                    LOG_INFO("send data to the client(%s)", inet_ntoa(http_clnts[sockfd].get_address()->sin_addr));
+                    Log::get_instance()->flush();
+
                     // write是根据keep-alive决定返回值的
                     // write返回true表示keep-alive生效，刷新定时器
                     // 返回false表示不保留连接
@@ -267,6 +291,8 @@ int main(int argc, char* argv[]){
                     {
                         time_t cur = time(NULL);
                         timer->expire = cur + 3 * TIME_SLOT;
+                        LOG_INFO("%s", "adjust timer once");
+                        Log::get_instance()->flush();
                         timer_lst.adjust_timer(timer);
                     }
                 }

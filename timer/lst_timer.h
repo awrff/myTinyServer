@@ -4,6 +4,8 @@
 #include <time.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include "../log/log.h"
+
 
 #define NAME_SIZE 20
 class util_timer;
@@ -110,6 +112,8 @@ class sort_timer_lst{
             if(!head){
                 return ;
             }
+            LOG_INFO("%s", "timer tick");
+            Log::get_instance()->flush();
             time_t cur = time(NULL);
             util_timer* tmp = head;
             while(tmp){
