@@ -13,7 +13,7 @@ const char *error_404_form = "The requested file was not found on this server.\n
 const char *error_500_title = "Internal Error";
 const char *error_500_form = "There was an unusual problem serving the request file.\n";
 
-const char* doc_root = "/home/var/html"; // 根目录
+const char* doc_root = "/home/myTinyServer/root/"; // 根目录
 
 // 操作数据库
 map<string, string> users;
@@ -59,10 +59,16 @@ int setnonblocking(int fd){
     return old_option;
 }
 
-void addfd(int epollfd, int fd, bool one_shot){
+void addfd(int epollfd, int fd, bool one_shot, bool triggerModeET){
     epoll_event event;
     event.data.fd = fd;
-    event.events = EPOLLIN | EPOLLET | EPOLLRDHUP; // EPOLLRDHUP 表示关闭连接，不用让上层通过检测EOF的方式来知道连接已经关闭
+
+    if(triggerModeET){
+        event.events = EPOLLIN | EPOLLET | EPOLLRDHUP;
+    }else{
+        event.events = EPOLLIN | EPOLLRDHUP;
+    }
+    
     if(one_shot){
         event.events |= EPOLLONESHOT; // 保证一个fd同一时间只有一个线程进行处理
     }
@@ -75,17 +81,21 @@ void removefd(int epollfd, int fd){
     close(fd);
 }
 
-void modfd(int epollfd, int fd, int ev){
+void modfd(int epollfd, int fd, int ev, bool triggerModeET){
     epoll_event event;
     event.data.fd = fd;
-    event.events = ev | EPOLLET |EPOLLONESHOT |EPOLLRDHUP;
+    if(triggerModeET){
+        event.events = ev | EPOLLIN | EPOLLET | EPOLLRDHUP;
+    }else{
+        event.events = ev | EPOLLIN | EPOLLRDHUP;
+    }
     epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
 }
 
 // 用户数量和epoll的fd是所有socket通用的
 int http_conn::m_user_count = 0;
 int http_conn::m_epollfd = -1;
-
+bool http_conn::m_trigger_et = false;
 // 初始化一个socket连接
 void http_conn::init(int sockfd, const sockaddr_in& addr){
     m_sockfd = sockfd;
@@ -93,13 +103,15 @@ void http_conn::init(int sockfd, const sockaddr_in& addr){
 
     // int reuse = 1;
     // setsockopt(m_sockfd,SOL_SOCKET,SO_REUSEADDR,&reuse,sizeof(reuse));
-    addfd(m_epollfd, sockfd, true); // 将socket对应fd加入epoll内核事件
+    addfd(m_epollfd, sockfd, true, m_trigger_et); // 将socket对应fd加入epoll内核事件
     m_user_count++; // 用户数量加一
     init();
 }
 
 void http_conn::init()
 {
+    bytes_to_send = 0;
+    bytes_have_send = 0;
     mysql = NULL;
     m_check_state = CHECK_STATE_REQUESTLINE;
     m_linger = false;
@@ -382,21 +394,14 @@ http_conn::HTTP_CODE http_conn::do_request(){
             strcat(sql_insert, "', '");
             strcat(sql_insert, password);
             strcat(sql_insert, "')");
-
-            printf("debug 1\n");
-
             if (users.find(name) == users.end())
             {
-                
-                printf("debug 2\n");
-                printf("sql: %s\n", sql_insert);
                 m_lock.lock();
                 /* 这里的mysql,即http_conn的MYSQL* 是在threadpool的run函数里面就初始化过的 */
                 int res = mysql_query(mysql, sql_insert);
                 users.insert(pair<string, string>(name, password));
                 m_lock.unlock();
 
-                printf("debug 3\n");
                 if (!res)
                     strcpy(m_url, "/log.html");
                 else
@@ -416,7 +421,50 @@ http_conn::HTTP_CODE http_conn::do_request(){
         }
     }
 
-    strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+    if (*(p + 1) == '0')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/register.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '1')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/log.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '5')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/picture.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '6')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/video.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else if (*(p + 1) == '7')
+    {
+        char *m_url_real = (char *)malloc(sizeof(char) * 200);
+        strcpy(m_url_real, "/index.html");
+        strncpy(m_real_file + len, m_url_real, strlen(m_url_real));
+
+        free(m_url_real);
+    }
+    else
+    {
+        strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
+    }
 
     if(stat(m_real_file, &m_file_stat) < 0){
         return NO_RESOURCE;
@@ -434,15 +482,22 @@ http_conn::HTTP_CODE http_conn::do_request(){
     return FILE_REQUEST;
 }
 
+void http_conn::unmap()
+{
+    if (m_file_address)
+    {
+        munmap(m_file_address, m_file_stat.st_size);
+        m_file_address = 0;
+    }
+}
+
 bool http_conn::write()
 {
     int temp = 0;
-    int bytes_to_send = m_write_idx;
-    int bytes_have_send = 0;
 
     if (bytes_to_send == 0)
     {
-        modfd(m_epollfd, m_sockfd, EPOLLIN);
+        modfd(m_epollfd, m_sockfd, EPOLLIN, m_trigger_et);
         init();
         return true;
     }
@@ -450,12 +505,11 @@ bool http_conn::write()
     while (1)
     {
         temp = writev(m_sockfd, m_iv, m_iv_count);
-
         if (temp < 0)
         {
             if (errno == EAGAIN) // 缓冲区不够写，重置EPOLLOUT事件，等待下一轮的EPOLLOUT
             {
-                modfd(m_epollfd, m_sockfd, EPOLLOUT);
+                modfd(m_epollfd, m_sockfd, EPOLLOUT, m_trigger_et);
                 return true;
             }
             unmap();
@@ -465,10 +519,19 @@ bool http_conn::write()
         bytes_have_send += temp;
         bytes_to_send -= temp;
 
+        if(bytes_have_send >= m_iv[0].iov_len){
+            m_iv[0].iov_len = 0;
+            m_iv[1].iov_base = m_file_address + (bytes_have_send - m_write_idx);
+            m_iv[1].iov_len = bytes_to_send;
+        }else{
+            m_iv[0].iov_base = m_write_buf + bytes_have_send;
+            m_iv[0].iov_len = m_iv[0].iov_len - bytes_have_send;
+        }
+
         if (bytes_to_send <= 0)
         {
             unmap();
-            modfd(m_epollfd, m_sockfd, EPOLLIN);
+            modfd(m_epollfd, m_sockfd, EPOLLIN, m_trigger_et);
             // 根据keep-alive字段决定是否立即关闭连接
             if (m_linger)
             {
@@ -496,10 +559,13 @@ bool http_conn::add_response(const char *format, ...)
         va_end(arg_list);
         return false;
     }
+
+    LOG_INFO("reponse:%s", m_write_buf + m_write_idx);
+    Log::get_instance()->flush();
+
     m_write_idx += len;
     va_end(arg_list);
-    LOG_INFO("request:%s", m_write_buf);
-    Log::get_instance()->flush();
+    
     return true;
 }
 bool http_conn::add_status_line(int status, const char *title)
@@ -508,10 +574,8 @@ bool http_conn::add_status_line(int status, const char *title)
 }
 bool http_conn::add_headers(int content_len)
 {
-    bool ret1 = add_content_length(content_len);
-    bool ret2 = add_linger();
-    bool ret3 = add_blank_line();
-    return ret1 & ret2 & ret3;
+    return add_content_length(content_len) && add_linger() &&
+           add_blank_line();
 }
 bool http_conn::add_content_length(int content_len)
 {
@@ -534,15 +598,6 @@ bool http_conn::add_content(const char *content)
     return add_response("%s", content);
 }
 
-void http_conn::unmap()
-{
-    if (m_file_address)
-    {
-        munmap(m_file_address, m_file_stat.st_size);
-        m_file_address = 0;
-    }
-}
-
 // 根据服务器处理请求的结果决定返回的内容
 bool http_conn::process_write(HTTP_CODE ret)
 {
@@ -550,35 +605,35 @@ bool http_conn::process_write(HTTP_CODE ret)
     {
     case INTERNAL_ERROR:
     {
-        printf("type: INTERNAL_ERROR\n");
         add_status_line(500, error_500_title);
         add_headers(strlen(error_500_form));
-        if (!add_content(error_500_form))
+        if (!add_content(error_500_form)){
             return false;
+        }
         break;
     }
     case BAD_REQUEST:
     {
-        printf("type: BAD_REQUEST\n");
         add_status_line(404, error_404_title);
         add_headers(strlen(error_404_form));
-        if (!add_content(error_404_form))
+        if (!add_content(error_404_form)){
             return false;
+        }
         break;
     }
     case FORBIDDEN_REQUEST:
     {
-        printf("type: FORBIDDEN_REQUEST\n");
         add_status_line(403, error_403_title);
         add_headers(strlen(error_403_form));
-        if (!add_content(error_403_form))
+        if (!add_content(error_403_form)){
             return false;
+        }
         break;
     }
     case FILE_REQUEST:
     {
-        printf("type: FILE_REQUEST\n");
         add_status_line(200, ok_200_title);
+        
         if (m_file_stat.st_size != 0)
         {
             add_headers(m_file_stat.st_size);
@@ -587,23 +642,26 @@ bool http_conn::process_write(HTTP_CODE ret)
             m_iv[1].iov_base = m_file_address;
             m_iv[1].iov_len = m_file_stat.st_size;
             m_iv_count = 2;
+            bytes_to_send = m_write_idx + m_file_stat.st_size;
             return true;
         }
         else
         {
             const char *ok_string = "<html><body></body></html>";
             add_headers(strlen(ok_string));
-            if (!add_content(ok_string))
+            if (!add_content(ok_string)){
                 return false;
+            }
         }
     }
     default:
-        printf("type: ERROR\n");
         return false;
     }
+    
     m_iv[0].iov_base = m_write_buf;
     m_iv[0].iov_len = m_write_idx;
     m_iv_count = 1;
+    bytes_to_send = m_write_idx;
     return true;
 }
 
@@ -614,7 +672,7 @@ void http_conn::process()
     if (read_ret == NO_REQUEST)
     {
         printf("read ret: NO_REQUEST\n");
-        modfd(m_epollfd, m_sockfd, EPOLLIN);
+        modfd(m_epollfd, m_sockfd, EPOLLIN, m_trigger_et);
         return;
     }
     bool write_ret = process_write(read_ret);
@@ -622,5 +680,5 @@ void http_conn::process()
     {
         close_conn();
     }
-    modfd(m_epollfd, m_sockfd, EPOLLOUT);
+    modfd(m_epollfd, m_sockfd, EPOLLOUT, m_trigger_et);
 }

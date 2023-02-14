@@ -16,19 +16,21 @@
 #include "mysql/sql_conn_pool.h"
 #include "log/log.h"
 
-#define CHAT_PORT 10992
-#define HTTP_PORT 10993
-
 #define TIME_SLOT 5 // 最小超时单位
-#define MAX_REQUESTS 100
-#define MAX_EPOLL_SIZE 100
-#define MAX_CLNT_NUM 100
-#define BUFF_SIZE 500
+#define MAX_REQUESTS 1000
+#define MAX_EPOLL_SIZE 10000
+#define MAX_CLNT_NUM 1000
 
-#define SYNLOG // 同步写日志
-//#define ASYNLOG //异步写日志
+#define ConnfdLT
+// #define ConnfdET
 
-extern int addfd(int epollfd, int fd, bool one_shot);
+#define ListenfdLT
+// #define ListenfdET
+
+// #define SYNLOG // 同步写日志
+#define ASYNLOG //异步写日志
+
+extern int addfd(int epollfd, int fd, bool one_shot, bool triggerModeET);
 extern int setnonblocking(int fd);
 
 // 定时器参数
@@ -131,8 +133,9 @@ int main(int argc, char* argv[]){
 
     /* SO_LINGER选项用来设置延迟关闭的时间，等待套接字发送缓冲区中的数据发送完成。没有设置该选项时，在调用close()后，在
     发送完FIN后会立即进行一些清理工作并返回。如果设置了SO_LINGER选项，并且等待时间为正值，则在清理之前会等待一段时间。 */
-    struct linger tmp={1, 0};
-    setsockopt(serv_sock, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
+    /* bug:这里如果设置了，会导致大文件传输时显示不了 */
+    // struct linger tmp={1, 1};
+    // setsockopt(serv_sock, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
 
     if(bind(serv_sock, (struct sockaddr*) &serv_addr, sizeof(serv_addr)) == -1){
         error_handling("bind error");
@@ -141,18 +144,29 @@ int main(int argc, char* argv[]){
     if(listen(serv_sock, MAX_REQUESTS) == -1){
         error_handling("listen error");
     }
-    
+
+#ifdef ConnfdET
+    http_conn::m_trigger_et = true;
+#endif
+#ifdef ConnfdLT
+    http_conn::m_trigger_et = false;
+#endif
+
     struct epoll_event* ep_events;
     struct epoll_event event;
     int event_cnt;
 
     epfd = epoll_create(MAX_EPOLL_SIZE);
     ep_events = (epoll_event*)malloc(MAX_EPOLL_SIZE*sizeof(event));
-    http_conn::m_epollfd = epfd; // 初始化http_conn的epollfd
-    addfd(epfd, serv_sock, false);
-    // event.events = EPOLLIN;
-    // event.data.fd = serv_sock;
-    // epoll_ctl(epfd, EPOLL_CTL_ADD, serv_sock, &event);
+
+    http_conn::m_epollfd = epfd; // 绑定http_conn的epollfd
+
+#ifdef ListenfdET
+    addfd(epfd, serv_sock, false, true); // 绑定server_sock得epollfd
+#endif
+#ifdef ListenfdLT
+    addfd(epfd, serv_sock, false, false); // 绑定server_sock得epollfd
+#endif
     
     // 定时器：用管道创建套接字
     int ret;
@@ -161,7 +175,7 @@ int main(int argc, char* argv[]){
         error_handling("socketpair error");
     }
     setnonblocking(pipefd[1]); // 将写端设置为非阻塞，防止缓冲区满以后无法再写于是阻塞的情况
-    addfd(epfd, pipefd[0], false); // 统一事件源，将读端注册为epoll事件进行检测
+    addfd(epfd, pipefd[0], false, false); // 统一事件源，将读端注册为epoll事件进行检测
 
     // 注册两个信号一个由alarm函数引起, 一个由终止(ctrl+c)引起, sig_handler会将信号写入管道
     addsig(SIGALRM, sig_handler, false);
@@ -183,19 +197,20 @@ int main(int argc, char* argv[]){
             LOG_ERROR("%s", "epoll failure");
             break;
         }
-        
+
         for(int i=0; i<event_cnt; i++){
             int sockfd = ep_events[i].data.fd;
             if(sockfd == serv_sock){
                 printf("CONNECT EVENT\n");
                 struct sockaddr_in clnt_addr;
                 clnt_addr_sz = sizeof(clnt_addr);
+#ifdef ListenfdLT
                 clnt_sock = accept(serv_sock, (struct sockaddr*) &clnt_addr, &clnt_addr_sz);
                 if(clnt_sock < 0){
                     LOG_ERROR("%s:errno is:%d", "accept error", errno);
                     continue;
                 }
-                printf("<html> new client connected, ip address: %s\n", inet_ntoa(clnt_addr.sin_addr));
+                printf("<html> new request, ip address: %s\n", inet_ntoa(clnt_addr.sin_addr));
                 if(http_conn::m_user_count >= MAX_CLNT_NUM){
                     show_error(sockfd, "interal server busy");
                     LOG_ERROR("%s", "Internal server busy");
@@ -216,9 +231,40 @@ int main(int argc, char* argv[]){
                 users_timer[clnt_sock].timer = timer;
 
                 timer_lst.add_timer(timer);
+#endif
+#ifdef ListenfdET
+                while(1){
+                    clnt_sock = accept(serv_sock, (struct sockaddr*) &clnt_addr, &clnt_addr_sz);
+                    if(clnt_sock < 0){
+                        LOG_ERROR("%s:errno is:%d", "accept error", errno);
+                        break;
+                    }
+                    printf("<html> new request, ip address: %s\n", inet_ntoa(clnt_addr.sin_addr));
+                    if(http_conn::m_user_count >= MAX_CLNT_NUM){
+                        show_error(sockfd, "interal server busy");
+                        LOG_ERROR("%s", "Internal server busy");
+                        break;
+                    }
+                    http_clnts[clnt_sock].init(clnt_sock, clnt_addr);
+
+                    // 定时器部分
+                    users_timer[clnt_sock].address = clnt_addr;
+                    users_timer[clnt_sock].sockfd = clnt_sock;
+
+                    util_timer* timer = new util_timer();
+                    timer->user_data = &users_timer[clnt_sock];
+                    timer->cb_func = cb_func;
+
+                    time_t cur = time(NULL);
+                    timer->expire = cur + 3*TIME_SLOT;
+                    users_timer[clnt_sock].timer = timer;
+
+                    timer_lst.add_timer(timer);
+                }
+                    
+#endif
             }
             else if(ep_events[i].events & (EPOLLRDHUP | EPOLLHUP, EPOLLERR)){
-                printf("EPOLL ERROR\n");
                 // 关闭连接需要移除定时器
                 util_timer* timer = users_timer[sockfd].timer;
                 timer->cb_func(&users_timer[sockfd]);
@@ -228,7 +274,6 @@ int main(int argc, char* argv[]){
             }
             else if((sockfd == pipefd[0]) && (ep_events[i].events & EPOLLIN)){
                 // 处理信号 SIGALRM & SIGTERM
-                printf("EPOLL SIG\n");
                 int sig;
                 char singals[1024];
                 ret = recv(pipefd[0], singals, sizeof(singals), 0);
@@ -255,7 +300,6 @@ int main(int argc, char* argv[]){
                 }
             }
             else if(ep_events[i].events & EPOLLIN){
-                printf("EPOLLIN EVENT\n");
                 util_timer* timer = users_timer[sockfd].timer;
                 if(http_clnts[sockfd].read()){
                     LOG_INFO("deal with the client(%s)", inet_ntoa(http_clnts[sockfd].get_address()->sin_addr));
@@ -279,14 +323,13 @@ int main(int argc, char* argv[]){
             else if(ep_events[i].events & EPOLLOUT){
                 // 写入数据也要刷新定时器
                 util_timer *timer = users_timer[sockfd].timer;
-                printf("EPOLLOUT EVENT\n");
-                if(!http_clnts[sockfd].write()){
+                if(http_clnts[sockfd].write()){
                     LOG_INFO("send data to the client(%s)", inet_ntoa(http_clnts[sockfd].get_address()->sin_addr));
                     Log::get_instance()->flush();
 
-                    // write是根据keep-alive决定返回值的
-                    // write返回true表示keep-alive生效，刷新定时器
-                    // 返回false表示不保留连接
+                    // write是根据keep-alive和报文传输结果决定返回值的
+                    // write返回true表示响应报文一次没发送完 或者 keep-alive生效，刷新定时器
+                    // 返回false表示发送失败或者发送成功但是非长连接
                     if (timer)
                     {
                         time_t cur = time(NULL);

@@ -74,11 +74,13 @@ private:
     bool add_blank_line();
 
 public:
+    MYSQL* mysql;
     // 静态的epollfd: 所有的socket上的事件由一个epoll内核管理
     static int m_epollfd;
     // 统计用户的数量
     static int m_user_count;
-    MYSQL* mysql;
+    // 触发模式
+    static bool m_trigger_et;
 
 private:
     int m_sockfd;
@@ -103,6 +105,8 @@ private:
     int m_iv_count;
     char *m_string; //存储请求头数据
     int cgi; // 是否使用POST
+    int bytes_to_send;
+    int bytes_have_send;
 };   
 
 #endif
